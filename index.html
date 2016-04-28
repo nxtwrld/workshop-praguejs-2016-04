@@ -1,12 +1,13 @@
 <html>
   <head>
-    <title>Blocked Malware</title>
+    <title>Avast - PragueJS Workshop</title>
     <!-- D3 library -->
     <script src='https://d3js.org/d3.v3.min.js' charset='utf-8'></script>
     <!-- Processing topojson data -->
     <script src='http://d3js.org/topojson.v0.min.js'></script>
     <!-- Loadsh - we will use loadsh throttle to limit number of rendering -->
     <script src='https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.11.2/lodash.min.js'></script>
+
     <style>
       html,
       body {
@@ -16,43 +17,26 @@
       }
 
       .country {
-        fill: rgba(0,128,255,.2);
+        fill: rgba(0,128,255,.4);
         stroke: #000;
         stroke-width: 1px;
       }
 
       .detection {
-        stroke-width: 2px;
+        stroke-width: 1px;
         stroke-linecap: round;
         fill: none;
       }
     </style>
   </head>
-  <body>
 
 
+  <body></body>
 
-  </body>
+
   <script>
 
-/* SAMPLE ITEM FROM DATA STREAM
 
-{
-  "timestamp": 1453075209000,
-  "src_ip": "141.8.226.19",
-  "src_latitude": 47,
-  "src_longitude": 8,
-  "src_city": "",
-  "src_country": "CH",
-  "dst_ip": "85.220.58.142",
-  "dst_latitude": 65,
-  "dst_longitude": -18,
-  "dst_city": "",
-  "dst_country": "IS",
-  "eventclass": "Unk:1201",
-  "url": "http://bagmans-gazette.com/b/opt/D16DBDB3BD28A457969AD206"
-}
-*/
 
   // WebSocket URL for out data stream
   var DATA_STREAM_SOURCE = 'ws://om.ff.avast.com:9000/ws';
@@ -62,8 +46,8 @@
   var MAX_NUMBER_OF_DETECTIONS = 300;
 
   // width and height of our canvas
-  var width = 1800;
-  var height = 800;
+  var width = 960;
+  var height = 480;
 
   // animation speed for each detection
   var speed = 2000;
@@ -73,7 +57,7 @@
   var index = 0;
 
 
-  /** STEP 1  - let's prepare out canvas**/
+  /** STEP 1  - let's prepare out canvas **/
 
   // Let's create SVG DOM node and append it to BODY
   var svg = d3.select('body')
@@ -84,18 +68,28 @@
               // viewBox will map your canvas and scale it to available area
               .attr('viewBox', [ 0, 0, width, height ].join(' '))
               .property('shape-rendering','crispEdges')
-              .attr('preserveAspectRatio', 'xMaxYMin meet');
+              // use preserveAspectRatio to scale the canvas to container
+              //.attr('preserveAspectRatio', 'xMaxYMin meet');
 
-  // create a projection function
+  // Create a projection function
+  // Try some alternative like d3.geo.orthographic() or d3.geo.azimuthalEqualArea()
+  // ..there are many more:
+  // - https://github.com/mbostock/d3/wiki/Geo-Projections
+  // - and a plugin with tons of others https://github.com/d3/d3-geo-projection
   var projection = d3.geo.equirectangular()
-  					.translate([ width / 2, height / 2 ])
-  					.scale(300);
+  					.translate([ width / 2 -20, height / 2 -20])
+  					.scale(153)
+            .precision(.1);
 
   // create a PATH generator based on our projection
+  // this will project lines between two point while respecting
+  // earth earth geometry
   var path = d3.geo.path()
   				.projection( projection );
 
   // Preconfigured color scale - categorized
+  // Here we create a function that we will use later to color code our
+  // detections
   var colors = d3.scale.category20();
 
 
@@ -123,7 +117,7 @@
 
 
 
-    /** STEP 3  - remove this return **/
+    /** STEP 3  - let's start listning to data - remove this return **/
     return;
 
 
@@ -165,14 +159,66 @@
 
 
   /**
+   * Open a WebSocket and request data
+   * @param  {Function} callback  Invoked once new data comes
+   * @return {Object}             Socket instance
+   */
+  function listenToData(callback){
+
+    // open a WebSocket to are stream source
+    var socket = new WebSocket(DATA_STREAM_SOURCE);
+
+    // socket connection is opened
+    socket.onopen = function(evt) {
+      // tell server to start streaming data
+      socket.send('Tak hazej!!');
+    };
+
+    // Incoming data from server
+    socket.onmessage = function(event) {
+        callback(JSON.parse(event.data));
+        /* SAMPLE ITEM FROM DATA STREAM
+        {
+          "timestamp": 1453075209000,
+          "src_ip": "141.8.226.19",
+          "src_latitude": 47,
+          "src_longitude": 8,
+          "src_city": "",
+          "src_country": "CH",
+          "dst_ip": "85.220.58.142",
+          "dst_latitude": 65,
+          "dst_longitude": -18,
+          "dst_city": "",
+          "dst_country": "IS",
+          "eventclass": "Unk:1201",
+          "url": "http://bagmans-gazette.com/b/opt/D16DBDB3BD28A457969AD206"
+        }
+        */
+    }
+
+    // return the running socket object
+    // perhaps you will want to close it later
+    return socket;
+  }
+
+
+
+
+
+
+
+  /**
    * Rendering detections
    */
   var renderDetections = _.throttle(function(){
+    // we are getting tons of data - we need to limit it
+    // otherwise we will run out of memory
+    var data = dataCache.slice(-MAX_NUMBER_OF_DETECTIONS);
+    dataCache = [];
 
-    dataCache = dataCache.slice(-MAX_NUMBER_OF_DETECTIONS);
-
+    // because all or data is incremental
     var dets = detections.selectAll('.detection_datum')
-      .data(dataCache);
+      .data(data);
 
     // enter
     dets
@@ -210,6 +256,8 @@
       // transition duration
       .duration(speed)
       // tweening properties during the transition
+      // Lear more about dasharray and dashoffest
+      // https://css-tricks.com/svg-line-animation-works/
       .attrTween("stroke-dasharray", function () {
         var length = this.getTotalLength(),
             interpolate = d3.interpolateString("0," + length , length  + "," + length );
@@ -231,33 +279,6 @@
 
 
 
-
-
-  /**
-   * Open a WebSocket and request data
-   * @param  {Function} callback  Invoked once new data comes
-   * @return {Object}             Socket instance
-   */
-  function listenToData(callback){
-
-    // open a WebSocket to are stream source
-    var socket = new WebSocket(DATA_STREAM_SOURCE);
-
-    // socket connection is opened
-    socket.onopen = function(evt) {
-      // tell server to start streaming data
-      socket.send('Tak hazej!');
-    };
-
-    // Incoming data from server
-    socket.onmessage = function(event) {
-        callback(JSON.parse(event.data));
-    }
-
-    // return the running socket object
-    // perhaps you will want to close it later
-    return socket;
-  }
 
   </script>
 </html>
