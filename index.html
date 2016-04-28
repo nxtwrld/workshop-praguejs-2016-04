@@ -1,0 +1,263 @@
+<html>
+  <head>
+    <title>Blocked Malware</title>
+    <!-- D3 library -->
+    <script src='https://d3js.org/d3.v3.min.js' charset='utf-8'></script>
+    <!-- Processing topojson data -->
+    <script src='http://d3js.org/topojson.v0.min.js'></script>
+    <!-- Loadsh - we will use loadsh throttle to limit number of rendering -->
+    <script src='https://cdnjs.cloudflare.com/ajax/libs/lodash.js/4.11.2/lodash.min.js'></script>
+    <style>
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        background: #000;
+      }
+
+      .country {
+        fill: rgba(0,128,255,.2);
+        stroke: #000;
+        stroke-width: 1px;
+      }
+
+      .detection {
+        stroke-width: 2px;
+        stroke-linecap: round;
+        fill: none;
+      }
+    </style>
+  </head>
+  <body>
+
+
+
+  </body>
+  <script>
+
+/* SAMPLE ITEM FROM DATA STREAM
+
+{
+  "timestamp": 1453075209000,
+  "src_ip": "141.8.226.19",
+  "src_latitude": 47,
+  "src_longitude": 8,
+  "src_city": "",
+  "src_country": "CH",
+  "dst_ip": "85.220.58.142",
+  "dst_latitude": 65,
+  "dst_longitude": -18,
+  "dst_city": "",
+  "dst_country": "IS",
+  "eventclass": "Unk:1201",
+  "url": "http://bagmans-gazette.com/b/opt/D16DBDB3BD28A457969AD206"
+}
+*/
+
+  // WebSocket URL for out data stream
+  var DATA_STREAM_SOURCE = 'ws://om.ff.avast.com:9000/ws';
+
+  // we will have to limit the number of detctions
+  // otherwise we will overload out browser
+  var MAX_NUMBER_OF_DETECTIONS = 300;
+
+  // width and height of our canvas
+  var width = 1800;
+  var height = 800;
+
+  // animation speed for each detection
+  var speed = 2000;
+
+  // storing data from stream
+  var dataCache = [];
+  var index = 0;
+
+
+  /** STEP 1  - let's prepare out canvas**/
+
+  // Let's create SVG DOM node and append it to BODY
+  var svg = d3.select('body')
+              .append('svg')
+              // we will make our SVG to take the whole space of the root element
+              .attr('width', '100%')
+              .attr('height', '100%')
+              // viewBox will map your canvas and scale it to available area
+              .attr('viewBox', [ 0, 0, width, height ].join(' '))
+              .property('shape-rendering','crispEdges')
+              .attr('preserveAspectRatio', 'xMaxYMin meet');
+
+  // create a projection function
+  var projection = d3.geo.equirectangular()
+  					.translate([ width / 2, height / 2 ])
+  					.scale(300);
+
+  // create a PATH generator based on our projection
+  var path = d3.geo.path()
+  				.projection( projection );
+
+  // Preconfigured color scale - categorized
+  var colors = d3.scale.category20();
+
+
+  // let's create a DOM node container for our map
+  var map = svg.append('g')
+                .attr('class', 'map');
+
+  var detections = svg.append('g')
+                .attr('class', 'detections');
+
+
+
+  /** STEP 2  - let's draw a map **/
+
+  // Get World Map data - this will fetch and parse you json
+  d3.json('countries.topo.json', function(topoData){
+
+    // render map to your canvas
+    map.selectAll('.country')
+  		.data(topojson.object(topoData, topoData.objects.countries).geometries)
+  		.enter()
+  		.append('path')
+  		.attr('class', 'country')
+  		.attr('d', path);
+
+
+
+    /** STEP 3  - remove this return **/
+    return;
+
+
+
+    // start data stream
+    // this opens a websocket stream that will give you an updates
+    // once there is a detection - there will be quite a few
+    var socket = listenToData(function(data){
+      // unfortunatelly some data has invalid positions - let's just use the correct ones
+      if(data.src_longitude && data.src_latitude && data.dst_longitude && data.dst_latitude) {
+        // configure data and add it to our detections cache
+        dataCache.push({
+          id : index++,
+          type: 'LineString',
+          coordinates: [
+              [data.src_longitude, data.src_latitude],
+              [data.dst_longitude, data.dst_latitude]
+          ],
+          color : colors(data.eventclass)
+        });
+
+        // limit the number of simultaneous lines rendered
+        renderDetections();
+      }
+    });
+
+
+
+    /** STEP 5 - remove this setTimeout to run continuously */
+    setTimeout(function(){
+      socket.close();
+    },15000);
+
+
+  });
+
+
+
+
+
+  /**
+   * Rendering detections
+   */
+  var renderDetections = _.throttle(function(){
+
+    dataCache = dataCache.slice(-MAX_NUMBER_OF_DETECTIONS);
+
+    var dets = detections.selectAll('.detection_datum')
+      .data(dataCache);
+
+    // enter
+    dets
+      .enter()
+        .append('path')
+        .attr('class', 'detection');
+
+    // update
+    dets
+      .attr('d', path)
+      .attr('stroke', function(d){ return d.color })
+      /** STEP 4  - uncomment transitioning **/
+      //.call(lineTransition);
+
+    // exit - this will actually not be needed
+    // we will delete the items differently
+    dets
+      .exit()
+        .remove();
+  }, 500);
+
+
+
+
+
+
+  /**
+   * A transitioning function
+   * @param  {Function} path Path function for given projection
+   */
+  function lineTransition(path) {
+    path.transition()
+      // easing
+      .ease(d3.ease('cubic'))
+      // transition duration
+      .duration(speed)
+      // tweening properties during the transition
+      .attrTween("stroke-dasharray", function () {
+        var length = this.getTotalLength(),
+            interpolate = d3.interpolateString("0," + length , length  + "," + length );
+        return function(t) { return interpolate(t); };
+      })
+      .attrTween("stroke-dashoffset", function(){
+        var length  = this.getTotalLength(),
+            interpolate = d3.interpolate(0, 0-length );
+        return function(t) {
+          return interpolate(t);
+        };
+      })
+      // a callback once the transition is finished
+      .each("end", function(d,i) {
+        // since we already animated the detection we can remove the element
+        d3.select(this).remove()
+      });
+  }
+
+
+
+
+
+  /**
+   * Open a WebSocket and request data
+   * @param  {Function} callback  Invoked once new data comes
+   * @return {Object}             Socket instance
+   */
+  function listenToData(callback){
+
+    // open a WebSocket to are stream source
+    var socket = new WebSocket(DATA_STREAM_SOURCE);
+
+    // socket connection is opened
+    socket.onopen = function(evt) {
+      // tell server to start streaming data
+      socket.send('Tak hazej!');
+    };
+
+    // Incoming data from server
+    socket.onmessage = function(event) {
+        callback(JSON.parse(event.data));
+    }
+
+    // return the running socket object
+    // perhaps you will want to close it later
+    return socket;
+  }
+
+  </script>
+</html>
